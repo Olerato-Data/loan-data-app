@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Loan Data Query App</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600&family=IBM+Plex+Serif:wght@600&display=swap">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+:root{--bg:#f2f5f3;--ink:#1b2a2f;--mute:#5d6e73;--line:#d5dedb;--card:#fff;--accent:#0f6c7b;--accent2:#d9a21b}
+@media (prefers-color-scheme:dark){:root{--bg:#10191c;--ink:#e6eeec;--mute:#93a5a9;--line:#2a3a3e;--card:#17242a;--accent:#4fb3c3;--accent2:#e5b84a}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 "IBM Plex Sans",system-ui,sans-serif}
+main{max-width:1000px;margin:0 auto;padding:28px 18px 60px}
+h1{font:600 28px "IBM Plex Serif",Georgia,serif;margin:0 0 4px}
+.sub{color:var(--mute);margin:0 0 22px}
+.panel{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:16px;margin-bottom:16px}
+select,input,button{font:inherit;color:inherit}
+select,input{width:100%;padding:9px 10px;border:1px solid var(--line);border-radius:4px;background:var(--bg)}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.row select{flex:1;min-width:220px}
+button{background:var(--accent);color:#fff;border:0;border-radius:4px;padding:9px 20px;font-weight:600;cursor:pointer}
+button:disabled{opacity:.5;cursor:wait}
+:focus-visible{outline:3px solid var(--accent2);outline-offset:2px}
+#desc{color:var(--mute);margin:10px 0 0}
+#status{font-size:13px;color:var(--mute);margin-top:6px}
+#status.err{color:#c0392b}
+.cards{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px}
+.cards div{background:var(--card);border:1px solid var(--line);border-left:4px solid var(--accent2);border-radius:4px;padding:10px 14px;min-width:150px}
+.cards b{display:block;font-size:22px}
+.cards span{font-size:13px;color:var(--mute)}
+.wrap{overflow-x:auto;margin-top:10px}
+table{border-collapse:collapse;width:100%;font-size:14px}
+th{position:sticky;top:0;background:var(--accent);color:#fff;text-align:left;padding:8px 10px;white-space:nowrap}
+td{padding:7px 10px;border-bottom:1px solid var(--line);white-space:nowrap}
+tbody tr:nth-child(even){background:color-mix(in srgb,var(--line) 35%,transparent)}
+.chart{position:relative;height:340px}
+h2{font-size:17px;margin:0 0 8px}
+.hint{color:var(--mute);font-size:13px}
+</style>
+</head>
+<body>
+<main>
+  <h1>Loan Data Query App</h1>
+  <p class="sub">Pick a question. The app calls your AWS endpoint, which runs the matching Athena query and returns the results.</p>
+
+  <div class="panel">
+    <label for="q" class="hint">Database question</label>
+    <div class="row">
+      <select id="q"></select>
+      <button id="run">Run Query</button>
+    </div>
+    <p id="desc"></p>
+    <div id="status">Idle: no question selected</div>
+  </div>
+
+  <div id="cards" class="cards"></div>
+  <div id="chartPanel" class="panel" hidden><h2 id="chartTitle"></h2><div class="chart"><canvas id="canvas"></canvas></div></div>
+  <div id="tablePanel" class="panel" hidden>
+    <div class="row"><h2 style="flex:1;margin:0">Results</h2><input id="search" type="search" placeholder="Search all columns" style="max-width:260px" aria-label="Search results"></div>
+    <div id="count" class="hint"></div>
+    <div class="wrap"><table><thead></thead><tbody></tbody></table></div>
+  </div>
+</main>
+
+<script>
+// Your AWS endpoint (API Gateway -> Lambda)
+const API_URL = "https://dptg1giswi.execute-api.eu-north-1.amazonaws.com/query";
+
+// Closed list of exactly eight questions. Each query_name must exist in the Lambda's QUERIES.
+const queryOptions = [
+  {questionNumber:1, question:"What are the 10 largest approved loans?", description:"Lists the ten biggest loans with loan_status 1, with the purpose, applicant income, credit score and interest rate.",
+   body:{query_name:"largest_approved_loans"}, displayType:"table"},
+  {questionNumber:2, question:"What is the approval rate for each loan purpose?", description:"Percentage of applications with loan_status 1 for each loan purpose, highest first.",
+   body:{query_name:"approval_rate_by_purpose"}, displayType:"bar_chart", chartTitle:"Approval rate (%) by loan purpose", xField:"loan_intent", yField:"approval_rate_pct"},
+  {questionNumber:3, question:"What is the average loan amount by home ownership status?", description:"Average requested loan amount for each home ownership category.",
+   body:{query_name:"avg_loan_by_home_ownership"}, displayType:"bar_chart", chartTitle:"Average loan amount by home ownership", xField:"person_home_ownership", yField:"avg_loan_amount"},
+  {questionNumber:4, question:"How does the average loan amount differ between approved and rejected applications for each loan purpose?", description:"Average requested loan amount for each loan purpose, shown separately for approved (loan_status 1) and rejected (loan_status 0) applications.",
+   body:{query_name:"loan_amount_by_purpose_and_outcome"}, displayType:"grouped_bar_chart", chartTitle:"Average loan amount by loan purpose and outcome", xField:"loan_intent", yField:"avg_loan_amount", seriesField:"outcome"},
+  {questionNumber:5, question:"Which education levels have an average income above the overall average?", description:"Education levels whose average income is higher than the average income of all applicants.",
+   body:{query_name:"education_above_avg_income"}, displayType:"table"},
+  {questionNumber:6, question:"How does the average loan amount change with years of work experience?", description:"Average loan amount for each level of work experience (levels with fewer than 30 applicants are left out).",
+   body:{query_name:"loan_by_experience"}, displayType:"line_chart", chartTitle:"Average loan amount by years of work experience", xField:"years_experience", yField:"avg_loan_amount"},
+  {questionNumber:7, question:"How does the approval rate vary across credit score bands?", description:"Applications, approvals and approval rate for four credit score bands.",
+   body:{query_name:"approval_by_credit_band"}, displayType:"table"},
+  {questionNumber:8, question:"What are the portfolio's key totals?", description:"Total applications, approvals, approval rate, total requested, smallest and largest loan, and average credit score.",
+   body:{query_name:"portfolio_summary"}, displayType:"table"}
+];
+
+const $ = id => document.getElementById(id);
+let chart = null, rows = [], cols = [];
+// Columns that hold dollar amounts. The API sends plain numbers; the $ is added here for display.
+const MONEY = new Set(["loan_amnt","person_income","avg_loan_amount","avg_income","total_requested","smallest_loan","largest_loan"]);
+const usd = v => "$" + Number(v).toLocaleString("en-US", {maximumFractionDigits: 2});
+// Columns that hold percentages (already on a 0-100 scale).
+const PCT = new Set(["approval_rate_pct","loan_int_rate"]);
+const pct = v => Number(v).toLocaleString("en-US", {maximumFractionDigits: 2}) + "%";
+const fmt = (col, v) => {
+  if (v === null || v === "" || isNaN(v)) return v;
+  if (MONEY.has(col)) return usd(v);
+  if (PCT.has(col)) return pct(v);
+  return v;
+};
+
+$("q").innerHTML = '<option value="" disabled selected>Select a database question</option>' +
+  queryOptions.map((o,i)=>`<option value="${i}">Question ${o.questionNumber}: ${o.question}</option>`).join("");
+
+$("q").onchange = () => {
+  const o = queryOptions[$("q").value];
+  $("desc").textContent = o.description;
+  setStatus("Ready: endpoint selected");
+};
+$("run").onclick = run;
+$("search").oninput = drawTable;
+
+function setStatus(t, err){ $("status").textContent = t; $("status").className = err ? "err" : ""; }
+function clearOutput(){
+  $("cards").innerHTML=""; $("chartPanel").hidden=true; $("tablePanel").hidden=true;
+  if(chart){chart.destroy();chart=null;}
+}
+
+async function run(){
+  if($("q").value===""){ setStatus("Select a database question first.", true); return; }
+  const o = queryOptions[$("q").value];
+  clearOutput();
+  $("run").disabled = true; setStatus("Loading: running query...");
+  try{
+    const res = await fetch(API_URL, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(o.body)});
+    if(!res.ok) throw new Error(`The endpoint returned HTTP ${res.status}.`);
+    let data; try{ data = await res.json(); }catch{ throw new Error("The endpoint returned invalid JSON."); }
+    rows = Array.isArray(data) ? data : data.results;
+    if(!Array.isArray(rows)) throw new Error("The response has no results array.");
+    if(!rows.length){ setStatus("Done: no matching records."); return; }
+    cols = Object.keys(rows[0]);
+    drawCards(); drawChart(o); $("search").value=""; drawTable();
+    setStatus(`Done: ${rows.length} row(s) returned`);
+  }catch(e){
+    setStatus("Error: " + (e.message.includes("Failed to fetch") ? "could not reach the endpoint (check the URL and CORS settings)." : e.message), true);
+  }finally{ $("run").disabled = false; }
+}
+
+function drawCards(){
+  const c = [["Rows returned", rows.length]];
+  if(cols.includes("n")) c.push(["Total of n", rows.reduce((s,r)=>s+(+r.n||0),0).toLocaleString()]);
+  if(cols.includes("loan_amnt")){ const v=rows.map(r=>+r.loan_amnt).filter(Number.isFinite); if(v.length) c.push(["Average loan amount", usd(v.reduce((a,b)=>a+b,0)/v.length)]); }
+  if(cols.includes("credit_score")){ const v=rows.map(r=>+r.credit_score).filter(Number.isFinite); if(v.length) c.push(["Average credit score", Math.round(v.reduce((a,b)=>a+b,0)/v.length)]); }
+  $("cards").innerHTML = c.map(([l,v])=>`<div><b>${v}</b><span>${l}</span></div>`).join("");
+}
+
+function drawChart(o){
+  if(o.displayType==="table") return;
+  const types = {bar_chart:"bar", grouped_bar_chart:"bar", line_chart:"line"};
+  if(!types[o.displayType]) { setStatus("Unsupported displayType: "+o.displayType, true); return; }
+  if(!cols.includes(o.xField) || !cols.includes(o.yField)){ setStatus("Chart fields are missing from the response.", true); return; }
+  const palette = ["#0f6c7b","#d9a21b","#6a8d73","#b5543c","#5b6fa6"];
+  let labels, sets;
+  if(o.seriesField && cols.includes(o.seriesField)){
+    labels = [...new Set(rows.map(r=>r[o.xField]))];
+    sets = [...new Set(rows.map(r=>r[o.seriesField]))].map((s,i)=>({label:String(s), backgroundColor:palette[i%5], borderColor:palette[i%5],
+      data:labels.map(l=>{const r=rows.find(r=>r[o.xField]===l&&r[o.seriesField]===s);return r?+r[o.yField]:null;})}));
+  } else {
+    labels = rows.map(r=>r[o.xField]);
+    sets = [{label:o.yField, data:rows.map(r=>+r[o.yField]), backgroundColor:palette[0], borderColor:palette[0]}];
+  }
+  $("chartTitle").textContent = o.chartTitle || ""; $("chartPanel").hidden = false;
+  const tick = getComputedStyle(document.body).color;
+  chart = new Chart($("canvas"), {type:types[o.displayType], data:{labels:labels.map(String), datasets:sets},
+    options:{responsive:true, maintainAspectRatio:false, plugins:{legend:{display:sets.length>1, labels:{color:tick}}, tooltip:{callbacks:{label:c=>`${c.dataset.label}: ${fmt(o.yField,c.parsed.y)}`}}},
+      scales:{x:{title:{display:true,text:o.xField,color:tick},ticks:{color:tick}}, y:{beginAtZero:true,title:{display:true,text:o.yField,color:tick},ticks:{color:tick,callback:v=>fmt(o.yField,v)}}}}});
+}
+
+function esc(v){ return String(v).replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+function drawTable(){
+  const term = $("search").value.toLowerCase();
+  const shown = term ? rows.filter(r=>cols.some(c=>String(r[c]??"").toLowerCase().includes(term))) : rows;
+  $("tablePanel").hidden = false;
+  $("count").textContent = term ? `${shown.length} of ${rows.length} rows match` : `${rows.length} rows`;
+  document.querySelector("thead").innerHTML = "<tr>" + cols.map(c=>`<th>${esc(c)}</th>`).join("") + "</tr>";
+  document.querySelector("tbody").innerHTML = shown.map(r=>"<tr>"+cols.map(c=>`<td>${r[c]===null?"<span class='hint'>NULL</span>":esc(fmt(c,r[c]))}</td>`).join("")+"</tr>").join("");
+}
+</script>
+</body>
+</html>
