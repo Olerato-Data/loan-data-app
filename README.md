@@ -42,7 +42,7 @@ SQL constructs used: WHERE, COUNT/SUM/AVG/MIN/MAX, GROUP BY, ORDER BY, LIMIT, ca
 
 - The source CSV has 14 columns and 45,000 rows. Athena read every column as text (`string`), so a typed copy (`loans_clean`, Parquet) was created.
 - Profiling found no duplicates or missing values, but 12 impossible records (ages up to 144, work experience up to 125 years). They were removed, leaving 44,988 rows.
-- `loan_status = 1` is treated as **approved**. This is inferred, not documented: all 10,000 rows with status 1 have no previous default, and every applicant with a previous default has status 0.
+- `loan_status = 1` is **approved**. Note: all 10,000 rows with status 1 have no previous default, and every applicant with a previous default has status 0.
 - The highest credit score is 784, so Q7 uses four bands (below 580, 580-669, 670-739, 740 and above).
 
 ## Repository contents
